@@ -131,14 +131,16 @@ def register_single_thread():
                         if match:
                             verify_code = match.group(1).replace("-", "")
                             break
+                        if verify_code:
+                            break
                 if not verify_code:
                     print(f"[-] {email} 未收到验证码")
                     continue
 
-                # Step 3: 验证验证码
-                if not verify_email_code_grpc(session, email, verify_code):
-                    print(f"[-] {email} 验证码无效")
-                    continue
+                # Step 3: 验证验证码 (已跳过，避免消费验证码)
+                # if not verify_email_code_grpc(session, email, verify_code):
+                #     print(f"[-] {email} 验证码无效")
+                #     continue
                 
                 # Step 4: 注册重试循环
                 for attempt in range(3):
