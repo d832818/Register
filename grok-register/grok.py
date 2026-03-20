@@ -123,8 +123,8 @@ def register_single_thread():
                 
                 # Step 2: 获取验证码
                 verify_code = None
-                for _ in range(180):
-                    time.sleep(1)
+                for _ in range(18):
+                    time.sleep(10)
                     content = email_service.fetch_first_email(jwt)
                     if content:
                         match = re.search(r">([A-Z0-9]{3}-[A-Z0-9]{3})<", content)
@@ -134,7 +134,7 @@ def register_single_thread():
                         if verify_code:
                             break
                 if not verify_code:
-                    print(f"[-] {email} 未收到验证码(180s超时)")
+                    print(f"[-] {email} 未收到验证码(180s后放弃)")
                     continue
 
                 # Step 3: 验证验证码 (已跳过，避免消费验证码)
