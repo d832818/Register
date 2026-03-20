@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-YESCAPTCHA_SOFT_ID = 102154
 
 
 class TurnstileService:
@@ -50,7 +49,6 @@ class TurnstileService:
         payload = {
             "clientKey": self.yescaptcha_key,
             "task": task,
-            "softID": YESCAPTCHA_SOFT_ID,
         }
 
         response = requests.post(url, json=payload)
