@@ -64,6 +64,16 @@ source .env && MAIL_SERVICE=moemail MAIL_SERVICE_KEY=你的key THREADS=1 python 
 - API Key 在后台获取
 - 支持临时邮箱自动创建和接收
 
+### 代理配置（支持负载均衡）
+
+如果你有多个可用代理，可以用 `PROXY_LIST` 逗号分隔：
+
+```env
+PROXY_LIST="socks5://192.168.10.4:1081,socks5://192.168.10.1:1083"
+```
+
+程序会随机选择一个代理用于初始化与验证码流程。
+
 ### Mail.tm（备选）
 
 - 注册地址：https://mail.tm

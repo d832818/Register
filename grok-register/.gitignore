@@ -3,3 +3,6 @@
 __pycache__
 keys/*
 *.pyc
+venv/
+*.log
+grok_*.log

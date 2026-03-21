@@ -43,7 +43,12 @@ def _moe_get_messages(email_id: str, api_key: str) -> list:
             timeout=15
         )
         if r.status_code == 200:
-            return r.json().get("messages", [])
+            data = r.json()
+            # MoeMail 有时返回 messages:[] 但把邮件藏在 message:{} 里
+            msgs = data.get("messages", [])
+            if not msgs and data.get("message"):
+                msgs = [data["message"]]
+            return msgs
     except Exception as e:
         print(f"[MoeMail] 获取消息列表异常: {e}")
     return []
@@ -63,9 +68,11 @@ def _moe_get_message(email_id: str, msg_id: str, api_key: str) -> Optional[dict]
             try:
                 r = requests.get(endpoint, headers=extra_headers, timeout=15)
                 if r.status_code == 200:
-                    data = r.json()
-                    content = data.get("content") or data.get("text") or data.get("html") or data.get("body") or data.get("data", {}).get("content") or ""
-                    subject = data.get("subject") or ""
+                    raw = r.json()
+                    # MoeMail 有时把邮件藏在 "message" 字段里
+                    data = raw.get("message") or raw
+                    content = data.get("content") or data.get("text") or data.get("html") or data.get("body") or ""
+                    subject = data.get("subject") or raw.get("subject") or ""
                     if content or subject:
                         print(f"[MoeMail] 获取邮件成功: subject=[{subject}]")
                         return {"subject": subject, "content": content, "html": content, "text": content}
@@ -108,6 +115,7 @@ def _moe_poll(email_id: str, api_key: str, timeout: int = 120, interval: float =
     """轮询直到收到邮件，返回邮件全文"""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # 优先从 messages 数组取
         messages = _moe_get_messages(email_id, api_key)
         if messages:
             m = messages[0]
@@ -115,17 +123,30 @@ def _moe_poll(email_id: str, api_key: str, timeout: int = 120, interval: float =
             if msg_id:
                 detail = _moe_get_message(email_id, msg_id, api_key)
                 if detail:
-                    # 尝试所有可能的内容字段
-                    content = detail.get("content") or detail.get("text") or detail.get("html") or ""
+                    content = detail.get("html") or detail.get("content") or detail.get("text") or ""
                     subject = detail.get("subject") or ""
-                    if not content and not subject:
-                        # content为null时，尝试从raw响应中提取
-                        raw_text = str(detail)
-                        print(f"[MoeMail] content=null, raw keys: {list(detail.keys())}")
-                    print(f"[MoeMail] 收到邮件: subject=[{subject}]")
-                    if content:
-                        print(f"[MoeMail] 内容预览: {content[:200]}")
-                    return f"{subject} {content}"
+                    if subject or content:
+                        print(f"[MoeMail] 收到邮件: subject=[{subject}]")
+                        if content:
+                            print(f"[MoeMail] 内容预览: {content[:200]}")
+                        return f"{subject} {content}"
+        else:
+            # messages 为空，但 MoeMail 可能把邮件藏在顶层 message 字段
+            try:
+                r = requests.get(f"{MOE_BASE}/api/emails/{email_id}", headers=_moe_headers(api_key), timeout=15)
+                if r.status_code == 200:
+                    top = r.json()
+                    msg_obj = top.get("message")
+                    if msg_obj and msg_obj.get("id"):
+                        subject = msg_obj.get("subject") or ""
+                        content = msg_obj.get("html") or msg_obj.get("content") or msg_obj.get("text") or ""
+                        if subject or content:
+                            print(f"[MoeMail] 收到邮件(from top.message): subject=[{subject}]")
+                            if content:
+                                print(f"[MoeMail] 内容预览: {content[:200]}")
+                            return f"{subject} {content}"
+            except:
+                pass
         time.sleep(interval)
     print(f"[MoeMail] 轮询超时({timeout}s)，无邮件")
     return None

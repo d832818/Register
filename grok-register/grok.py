@@ -14,10 +14,26 @@ load_dotenv()
 # 基础配置
 site_url = "https://accounts.x.ai"
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
-PROXIES = {
-    # "http": "http://127.0.0.1:10808",
-    # "https": "http://127.0.0.1:10808"
-}
+import random
+_PROXY_LIST = []
+for _v in os.getenv("PROXY_LIST", "").strip().split(","):
+    _v = _v.strip()
+    if _v:
+        _PROXY_LIST.append(_v)
+if not _PROXY_LIST:
+    for _k, _env in [("http", "HTTP_PROXY"), ("https", "HTTPS_PROXY"), ("http", "http_proxy"), ("https", "https_proxy")]:
+        _v = os.getenv(_env, "").strip()
+        if _v:
+            _PROXY_LIST.append(_v)
+            break
+
+def _get_proxy():
+    if not _PROXY_LIST:
+        return {}
+    p = random.choice(_PROXY_LIST)
+    return {"http": p, "https": p}
+
+PROXIES = _get_proxy()
 
 # 动态获取的全局变量
 config = {
@@ -29,6 +45,8 @@ config = {
 post_lock = threading.Lock()
 file_lock = threading.Lock()
 success_count = 0
+success_count_lock = threading.Lock()
+MAX_SUCCESS = 3
 start_time = time.time()
 
 def generate_random_name() -> str:
@@ -78,6 +96,7 @@ def verify_email_code_grpc(session, email, code):
         return False
 
 def register_single_thread():
+    global success_count
     # 错峰启动，防止瞬时并发过高
     time.sleep(random.uniform(0, 5))
     
@@ -96,7 +115,9 @@ def register_single_thread():
     
     while True:
         try:
-            with requests.Session(impersonate="chrome120", proxies=PROXIES) as session:
+            cycle_proxies = _get_proxy()
+            email_service = EmailService(proxies=cycle_proxies)
+            with requests.Session(impersonate="chrome120", proxies=cycle_proxies) as session:
                 # 预热连接
                 try: session.get(site_url, timeout=10)
                 except: pass
@@ -127,12 +148,13 @@ def register_single_thread():
                     time.sleep(10)
                     content = email_service.fetch_first_email(jwt)
                     if content:
-                        match = re.search(r">([A-Z0-9]{3}-[A-Z0-9]{3})<", content)
+                        match = re.search(r"([A-Z0-9]{3}-[A-Z0-9]{3})", content)
                         if match:
                             verify_code = match.group(1).replace("-", "")
+                            print(f"[*] {email} 提取验证码: {verify_code}")
                             break
-                        if verify_code:
-                            break
+                    if verify_code:
+                        break
                 if not verify_code:
                     print(f"[-] {email} 未收到验证码(180s后放弃)")
                     continue
@@ -182,10 +204,15 @@ def register_single_thread():
                                     os.makedirs("keys", exist_ok=True)
                                     with open("keys/grok.txt", "a") as f: f.write(sso + "\n")
                                     with open("keys/accounts.txt", "a") as f: f.write(f"{email}:{password}:{sso}\n")
-                                    global success_count
+                                with success_count_lock:
                                     success_count += 1
                                     avg = (time.time() - start_time) / success_count
-                                    print(f"[✓] 注册成功: {email} | SSO: {sso[:15]}... | 平均: {avg:.1f}s")
+                                    print(f"[✓] 注册成功: {email} | SSO: {sso[:15]}... | 第{success_count}个 | 平均: {avg:.1f}s")
+                                    if success_count >= MAX_SUCCESS:
+                                        print(f"[✓] 已完成 {MAX_SUCCESS} 个注册，退出")
+                                        return  # 退出整个线程
+                                print("[*] 休息 10 秒...")
+                                time.sleep(10)
                                 break  # 跳出 for 循环，继续 while True 注册下一个
                     
                     print(f"[-] {email} 提交失败 ({res.status_code})")
@@ -206,45 +233,42 @@ def main():
     # 1. 扫描参数
     print("[*] 正在初始化...")
     start_url = f"{site_url}/sign-up"
-    with requests.Session(impersonate="chrome120") as s:
+    for init_retry in range(3):
         try:
-            html = s.get(start_url).text
-            # Key
-            key_match = re.search(r'sitekey":"(0x4[a-zA-Z0-9_-]+)"', html)
-            if key_match: config["site_key"] = key_match.group(1)
-            # Tree
-            tree_match = re.search(r'next-router-state-tree":"([^"]+)"', html)
-            if tree_match: config["state_tree"] = tree_match.group(1)
-            # Action ID
-            # 直接用正则从 HTML 抓取所有 /_next/static/chunks/*.js
-            js_urls = [urljoin(start_url, m.group(0)) for m in re.finditer(r"/_next/static/chunks/[^\"'\s>]+\.js", html)]
-            if not js_urls:
-                print(f"[Warn] HTML 长度 {len(html)}, 未解析出 JS，前500字符预览: {html[:500].replace('\n',' ')}")
-            action_found = None
-            for js_url in js_urls:
-                try:
-                    js_content = s.get(js_url, timeout=15).text
-                except Exception as e:
-                    continue
-                match = re.search(r'7f[a-fA-F0-9]{40}', js_content)
-                if match:
-                    action_found = match.group(0)
-                    print(f"[+] Action ID: {action_found}")
+            with requests.Session(impersonate="chrome120", proxies=PROXIES) as s:
+                html = s.get(start_url, timeout=20).text
+                key_match = re.search(r'sitekey":"(0x4[a-zA-Z0-9_-]+)"', html)
+                if key_match: config["site_key"] = key_match.group(1)
+                tree_match = re.search(r'next-router-state-tree":"([^"]+)"', html)
+                if tree_match: config["state_tree"] = tree_match.group(1)
+                js_urls = [urljoin(start_url, m.group(0)) for m in re.finditer(r"/_next/static/chunks/[^\"'\s>]+\.js", html)]
+                action_found = None
+                for js_url in js_urls:
+                    try:
+                        js_content = s.get(js_url, timeout=15).text
+                    except:
+                        continue
+                    match = re.search(r'7f[a-fA-F0-9]{40}', js_content)
+                    if match:
+                        action_found = match.group(0)
+                        break
+                if action_found:
+                    config["action_id"] = action_found
                     break
-            if action_found:
-                config["action_id"] = action_found
         except Exception as e:
-            print(f"[-] 初始化扫描失败: {e}")
-            return
-
-    if not config["action_id"]:
+            print(f"[-] 初始化请求异常(attempt {init_retry+1}): {e}")
+            if init_retry < 2:
+                time.sleep(3)
+    
+    if not config.get("action_id"):
         print("[-] 错误: 未找到 Action ID")
         return
 
     # 2. 启动
+    default_threads = int(os.getenv("THREADS", "1").strip() or 1)
     try:
-        t = int(input("\n并发数 (默认8): ").strip() or 8)
-    except: t = 8
+        t = int(input(f"\n并发数 (默认{default_threads}): ").strip() or default_threads)
+    except: t = default_threads
     
     print(f"[*] 启动 {t} 个线程...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=t) as executor:
